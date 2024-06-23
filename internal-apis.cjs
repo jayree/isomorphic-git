@@ -5,13 +5,13 @@ Object.defineProperty(exports, '__esModule', { value: true });
 function _interopDefault (ex) { return (ex && (typeof ex === 'object') && 'default' in ex) ? ex['default'] : ex; }
 
 var AsyncLock = _interopDefault(require('async-lock'));
-var path = require('path');
 var crc32 = _interopDefault(require('crc-32'));
 var pako = _interopDefault(require('pako'));
 var Hash = _interopDefault(require('sha.js/sha1.js'));
 var ignore = _interopDefault(require('ignore'));
 var pify = _interopDefault(require('pify'));
 var diff3Merge = _interopDefault(require('diff3'));
+var _path = _interopDefault(require('path'));
 
 class BaseError extends Error {
   constructor(message) {
@@ -1048,6 +1048,40 @@ function compareRefNames(a, b) {
   return tmp
 }
 
+const memo = new Map();
+function normalizePath(path) {
+  let normalizedPath = memo.get(path);
+  if (!normalizedPath) {
+    normalizedPath = normalizePathInternal(path);
+    memo.set(path, normalizedPath);
+  }
+  return normalizedPath
+}
+
+function normalizePathInternal(path) {
+  path = path
+    .split('/./')
+    .join('/') // Replace '/./' with '/'
+    .replace(/\/{2,}/g, '/'); // Replace consecutive '/'
+
+  if (path === '/.') return '/' // if path === '/.' return '/'
+  if (path === './') return '.' // if path === './' return '.'
+
+  if (path.startsWith('./')) path = path.slice(2); // Remove leading './'
+  if (path.endsWith('/.')) path = path.slice(0, -2); // Remove trailing '/.'
+  if (path.length > 1 && path.endsWith('/')) path = path.slice(0, -1); // Remove trailing '/'
+
+  if (path === '') return '.' // if path === '' return '.'
+
+  return path
+}
+
+// For some reason path.posix.join is undefined in webpack
+
+function join(...parts) {
+  return normalizePath(parts.map(normalizePath).join('/'))
+}
+
 // This is straight from parse_unit_factor in config.c of canonical git
 const num = val => {
   val = val.toLowerCase();
@@ -1162,7 +1196,7 @@ const getPath = (section, subsection, name) => {
     .join('.')
 };
 
-const normalizePath = path => {
+const normalizePath$1 = path => {
   const pathSegments = path.split('.');
   const section = pathSegments.shift();
   const name = pathSegments.pop();
@@ -1218,7 +1252,7 @@ class GitConfig {
   }
 
   async get(path, getall = false) {
-    const normalizedPath = normalizePath(path).path;
+    const normalizedPath = normalizePath$1(path).path;
     const allValues = this.parsedConfig
       .filter(config => config.path === normalizedPath)
       .map(({ section, name, value }) => {
@@ -1256,7 +1290,7 @@ class GitConfig {
       name,
       path: normalizedPath,
       sectionPath,
-    } = normalizePath(path);
+    } = normalizePath$1(path);
     const configIndex = findLastIndex(
       this.parsedConfig,
       config => config.path === normalizedPath
@@ -1478,7 +1512,7 @@ class GitRefManager {
     // and .git/refs/remotes/origin/refs/merge-requests
     for (const [key, value] of actualRefsToWrite) {
       await acquireLock(key, async () =>
-        fs.write(path.join(gitdir, key), `${value.trim()}\n`, 'utf8')
+        fs.write(join(gitdir, key), `${value.trim()}\n`, 'utf8')
       );
     }
     return { pruned }
@@ -1491,13 +1525,13 @@ class GitRefManager {
       throw new InvalidOidError(value)
     }
     await acquireLock(ref, async () =>
-      fs.write(path.join(gitdir, ref), `${value.trim()}\n`, 'utf8')
+      fs.write(join(gitdir, ref), `${value.trim()}\n`, 'utf8')
     );
   }
 
   static async writeSymbolicRef({ fs, gitdir, ref, value }) {
     await acquireLock(ref, async () =>
-      fs.write(path.join(gitdir, ref), 'ref: ' + `${value.trim()}\n`, 'utf8')
+      fs.write(join(gitdir, ref), 'ref: ' + `${value.trim()}\n`, 'utf8')
     );
   }
 
@@ -1507,7 +1541,7 @@ class GitRefManager {
 
   static async deleteRefs({ fs, gitdir, refs }) {
     // Delete regular ref
-    await Promise.all(refs.map(ref => fs.rm(path.join(gitdir, ref))));
+    await Promise.all(refs.map(ref => fs.rm(join(gitdir, ref))));
     // Delete any packed ref
     let text = await acquireLock('packed-refs', async () =>
       fs.read(`${gitdir}/packed-refs`, { encoding: 'utf8' })
@@ -1706,7 +1740,7 @@ let lock$1 = null;
 class GitShallowManager {
   static async read({ fs, gitdir }) {
     if (lock$1 === null) lock$1 = new AsyncLock();
-    const filepath = path.join(gitdir, 'shallow');
+    const filepath = join(gitdir, 'shallow');
     const oids = new Set();
     await lock$1.acquire(filepath, async function() {
       const text = await fs.read(filepath, { encoding: 'utf8' });
@@ -1722,7 +1756,7 @@ class GitShallowManager {
 
   static async write({ fs, gitdir, oids }) {
     if (lock$1 === null) lock$1 = new AsyncLock();
-    const filepath = path.join(gitdir, 'shallow');
+    const filepath = join(gitdir, 'shallow');
     if (oids.size > 0) {
       const text = [...oids].join('\n') + '\n';
       await lock$1.acquire(filepath, async function() {
@@ -3005,7 +3039,7 @@ async function readObjectPacked({
 }) {
   // Check to see if it's in a packfile.
   // Iterate through all the .idx files
-  let list = await fs.readdir(path.join(gitdir, 'objects/pack'));
+  let list = await fs.readdir(join(gitdir, 'objects/pack'));
   list = list.filter(x => x.endsWith('.idx'));
   for (const filename of list) {
     const indexFile = `${gitdir}/objects/pack/${filename}`;
@@ -3128,7 +3162,7 @@ async function listCommitsAndTags({
   fs,
   cache,
   dir,
-  gitdir = path.join(dir, '.git'),
+  gitdir = join(dir, '.git'),
   start,
   finish,
 }) {
@@ -3342,7 +3376,7 @@ async function listObjects({
   fs,
   cache,
   dir,
-  gitdir = path.join(dir, '.git'),
+  gitdir = join(dir, '.git'),
   oids,
 }) {
   const visited = new Set();
@@ -3444,7 +3478,7 @@ async function _pack({
   fs,
   cache,
   dir,
-  gitdir = path.join(dir, '.git'),
+  gitdir = join(dir, '.git'),
   oids,
 }) {
   const hash = new Hash();
@@ -3616,7 +3650,7 @@ async function writeRefsAdResponse({ capabilities, refs, symrefs }) {
 async function uploadPack({
   fs,
   dir,
-  gitdir = path.join(dir, '.git'),
+  gitdir = join(dir, '.git'),
   advertiseRefs = false,
 }) {
   try {
@@ -3680,21 +3714,21 @@ function dirname(path) {
 // I'm putting this in a Manager because I reckon it could benefit
 // from a LOT of caching.
 class GitIgnoreManager {
-  static async isIgnored({ fs, dir, gitdir = path.join(dir, '.git'), filepath }) {
+  static async isIgnored({ fs, dir, gitdir = join(dir, '.git'), filepath }) {
     // ALWAYS ignore ".git" folders.
     if (basename(filepath) === '.git') return true
     // '.' is not a valid gitignore entry, so '.' is never ignored
     if (filepath === '.') return false
     // Check and load exclusion rules from project exclude file (.git/info/exclude)
     let excludes = '';
-    const excludesFile = path.join(gitdir, 'info', 'exclude');
+    const excludesFile = join(gitdir, 'info', 'exclude');
     if (await fs.exists(excludesFile)) {
       excludes = await fs.read(excludesFile, 'utf8');
     }
     // Find all the .gitignore files that could affect this file
     const pairs = [
       {
-        gitignore: path.join(dir, '.gitignore'),
+        gitignore: join(dir, '.gitignore'),
         filepath,
       },
     ];
@@ -3703,7 +3737,7 @@ class GitIgnoreManager {
       const folder = pieces.slice(0, i).join('/');
       const file = pieces.slice(i).join('/');
       pairs.push({
-        gitignore: path.join(dir, folder, '.gitignore'),
+        gitignore: join(dir, folder, '.gitignore'),
         filepath: file,
       });
     }
@@ -4646,7 +4680,7 @@ async function rmRecursive(fs, filepath) {
   } else if (entries.length) {
     await Promise.all(
       entries.map(entry => {
-        const subpath = path.join(filepath, entry);
+        const subpath = join(filepath, entry);
         return fs.lstat(subpath).then(stat => {
           if (!stat) return
           return stat.isDirectory() ? rmRecursive(fs, subpath) : fs.rm(subpath)
@@ -5386,9 +5420,9 @@ class GitWalkerRepo {
     const tree = GitTree.from(object);
     // cache all entries
     for (const entry of tree) {
-      map.set(path.join(filepath, entry.path), entry);
+      map.set(join(filepath, entry.path), entry);
     }
-    return tree.entries().map(entry => path.join(filepath, entry.path))
+    return tree.entries().map(entry => join(filepath, entry.path))
   }
 
   async type(entry) {
@@ -5677,7 +5711,7 @@ async function mergeTree({
   fs,
   cache,
   dir,
-  gitdir = path.join(dir, '.git'),
+  gitdir = join(dir, '.git'),
   index,
   ourOid,
   baseOid,
@@ -5986,6 +6020,10 @@ async function mergeBlobs({
   return { cleanMerge, mergeResult: { mode, path, oid, type } }
 }
 
+// This module is necessary because Webpack doesn't ship with
+
+const path = _path.posix === undefined ? _path : _path.posix;
+
 async function sleep(ms) {
   return new Promise((resolve, reject) => setTimeout(resolve, ms))
 }
@@ -6193,12 +6231,6 @@ function writeUploadPackRequest({
   return packstream
 }
 
-Object.defineProperty(exports, 'join', {
-  enumerable: true,
-  get: function () {
-    return path.join;
-  }
-});
 exports.Errors = index;
 exports.FileSystem = FileSystem;
 exports.GitAnnotatedTag = GitAnnotatedTag;
@@ -6228,6 +6260,7 @@ exports.collect = collect;
 exports.comparePath = comparePath;
 exports.flatFileListToDirectoryStructure = flatFileListToDirectoryStructure;
 exports.isBinary = isBinary;
+exports.join = join;
 exports.listCommitsAndTags = listCommitsAndTags;
 exports.listObjects = listObjects;
 exports.mergeFile = mergeFile;
@@ -6238,6 +6271,7 @@ exports.parseReceivePackResponse = parseReceivePackResponse;
 exports.parseRefsAdResponse = parseRefsAdResponse;
 exports.parseUploadPackRequest = parseUploadPackRequest;
 exports.parseUploadPackResponse = parseUploadPackResponse;
+exports.path = path;
 exports.pkg = pkg;
 exports.readObjectPacked = readObjectPacked;
 exports.resolveTree = resolveTree;
